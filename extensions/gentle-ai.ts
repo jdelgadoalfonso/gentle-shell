@@ -7274,18 +7274,24 @@ const NATIVE_START_LENS_REASON_MAX = 500;
  * (gentle-ai START --lenses): both fields or neither, one to four known lens
  * names (short or review- form) without repeats, a non-empty single-line
  * reason of at most 500 bytes, and never together with focus. Returns the
- * canonical request fields, {} without a selection, or undefined when invalid.
+ * canonical request fields, {} without a selection, or the first violated
+ * rule. A bad reason is reported as lenses-reason-invalid, because answering
+ * "lenses-invalid" for a reason that is empty, multi-line, or over the byte
+ * limit sends the caller off to change lens names that were never wrong.
  */
-function validateNativeStartLensSelection(rawStart: Record<string, unknown>): { lenses?: readonly string[]; lensesReason?: string } | undefined {
+type NativeStartLensSelection = { lenses?: readonly string[]; lensesReason?: string } | { reason: "lenses-invalid" | "lenses-reason-invalid"; field?: "lenses" | "lensesReason" };
+
+function validateNativeStartLensSelection(rawStart: Record<string, unknown>): NativeStartLensSelection {
 	const { lenses, lensesReason } = rawStart;
 	if (lenses === undefined && lensesReason === undefined) return {};
-	if (!Array.isArray(lenses) || lenses.length === 0 || typeof lensesReason !== "string" || rawStart.focus !== undefined) return undefined;
-	if (lensesReason.trim() === "" || /[\r\n]/.test(lensesReason) || Buffer.byteLength(lensesReason, "utf8") > NATIVE_START_LENS_REASON_MAX) return undefined;
+	if (rawStart.focus !== undefined || lenses === undefined || lensesReason === undefined) return { reason: "lenses-invalid" };
+	if (typeof lensesReason !== "string" || lensesReason.trim() === "" || /[\r\n]/.test(lensesReason) || Buffer.byteLength(lensesReason, "utf8") > NATIVE_START_LENS_REASON_MAX) return { reason: "lenses-reason-invalid", field: "lensesReason" };
+	if (!Array.isArray(lenses) || lenses.length === 0) return { reason: "lenses-invalid", field: "lenses" };
 	const chosen = new Set<string>();
 	for (const lens of lenses) {
-		if (typeof lens !== "string") return undefined;
+		if (typeof lens !== "string") return { reason: "lenses-invalid", field: "lenses" };
 		const canonical = lens.startsWith("review-") ? lens : `review-${lens}`;
-		if (!(NATIVE_START_LENSES as readonly string[]).includes(canonical) || chosen.has(canonical)) return undefined;
+		if (!(NATIVE_START_LENSES as readonly string[]).includes(canonical) || chosen.has(canonical)) return { reason: "lenses-invalid", field: "lenses" };
 		chosen.add(canonical);
 	}
 	return { lenses: NATIVE_START_LENSES.filter((lens) => chosen.has(lens)), lensesReason };
@@ -7395,7 +7401,7 @@ function nativeStartRejection(reason: string, field?: string): Record<string, un
 							? "native-start-committed-only-required"
 							: reason === "committed-only-invalid"
 								? "native-start-committed-only-invalid"
-								: reason === "unknown-field" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
+								: reason === "unknown-field" || reason === "focus-invalid" || reason === "lenses-invalid" || reason === "lenses-reason-invalid" || reason === "untracked-selection-invalid" || reason === "provider-base-offer-invalid" || reason === "provider-base-tree-mismatch"
 									? "native-start-input-invalid"
 									: "native-start-policy-path-invalid",
 		reason,
@@ -10185,7 +10191,7 @@ async function executeReviewControllerOperation(
 			const focus = rawStart.focus;
 			if (focus !== undefined && !isNativeStartFocus(focus)) return nativeStartRejection("focus-invalid");
 			const lensSelection = validateNativeStartLensSelection(rawStart);
-			if (lensSelection === undefined) return nativeStartRejection("lenses-invalid");
+			if ("reason" in lensSelection) return nativeStartRejection(lensSelection.reason, lensSelection.field);
 			const policy: NativeStartPolicyValidation = rawStart.policyPath === undefined
 				? {}
 				: validateNativeStartPolicyPath(defaultCwd, rawStart.policyPath);

@@ -214,20 +214,31 @@ test("START forwards the agent lens selection in canonical order and rejects mal
 		targetStatus: async () => { statusCalls += 1; throw new Error("must not reach STATUS"); },
 		start: async () => { throw new Error("must not reach START"); },
 	});
-	for (const input of [
-		{ mode: "ordinary", lenses: ["risk"] },
-		{ mode: "ordinary", lensesReason: "why" },
-		{ mode: "ordinary", lenses: [], lensesReason: "why" },
-		{ mode: "ordinary", lenses: "risk", lensesReason: "why" },
-		{ mode: "ordinary", lenses: ["security"], lensesReason: "why" },
-		{ mode: "ordinary", lenses: ["risk", "review-risk"], lensesReason: "why" },
-		{ mode: "ordinary", lenses: ["risk"], lensesReason: " " },
-		{ mode: "ordinary", lenses: ["risk"], lensesReason: "x".repeat(501) },
-		{ mode: "ordinary", lenses: ["risk"], lensesReason: "why", focus: "risk" },
-	]) {
+	// A rejected lens selection must name the field that is actually wrong:
+	// a reason that is empty, multi-line, or over the native byte limit is not
+	// a bad lens name, and reporting it as one sends the caller to fix the
+	// wrong input. The outcome stays native-start-input-invalid for both.
+	for (const [input, reason, field] of [
+		[{ mode: "ordinary", lenses: ["risk"] }, "lenses-invalid", undefined],
+		[{ mode: "ordinary", lensesReason: "why" }, "lenses-invalid", undefined],
+		[{ mode: "ordinary", lenses: [], lensesReason: "why" }, "lenses-invalid", "lenses"],
+		[{ mode: "ordinary", lenses: "risk", lensesReason: "why" }, "lenses-invalid", "lenses"],
+		[{ mode: "ordinary", lenses: ["security"], lensesReason: "why" }, "lenses-invalid", "lenses"],
+		[{ mode: "ordinary", lenses: ["risk", "review-risk"], lensesReason: "why" }, "lenses-invalid", "lenses"],
+		[{ mode: "ordinary", lenses: ["risk"], lensesReason: "why", focus: "risk" }, "lenses-invalid", undefined],
+		[{ mode: "ordinary", lenses: ["risk"], lensesReason: " " }, "lenses-reason-invalid", "lensesReason"],
+		[{ mode: "ordinary", lenses: ["risk"], lensesReason: "why\n" }, "lenses-reason-invalid", "lensesReason"],
+		[{ mode: "ordinary", lenses: ["risk"], lensesReason: "x".repeat(501) }, "lenses-reason-invalid", "lensesReason"],
+		// The native limit counts bytes, not characters: 300 accented
+		// characters are 600 bytes and the CLI refuses them. The controller
+		// must refuse the same input instead of forwarding a request it knows
+		// the provider will reject.
+		[{ mode: "ordinary", lenses: ["risk"], lensesReason: "á".repeat(300) }, "lenses-reason-invalid", "lensesReason"],
+	] as const) {
 		const result = await __testing.executeReviewControllerOperation({ operation: "start", input: JSON.stringify(input) }, cwd, native);
 		assert.equal(result.status, "blocked", JSON.stringify(input));
-		assert.equal(result.reason, "lenses-invalid", JSON.stringify(input));
+		assert.equal(result.reason, reason, JSON.stringify(input));
+		assert.equal(result.field, field, JSON.stringify(input));
 		assert.equal(result.outcome, "native-start-input-invalid", JSON.stringify(input));
 	}
 	assert.equal(statusCalls, 0);
